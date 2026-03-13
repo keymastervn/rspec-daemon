@@ -65,7 +65,12 @@ module RSpec
     end
 
     def reset
-      RSpec::Core::Configuration.class_eval { define_method(:command) { "rspec" } }
+      unless RSpec::Core::Configuration.method_defined?(:__command_overridden__)
+        RSpec::Core::Configuration.class_eval do
+          define_method(:command) { "rspec" }
+          define_method(:__command_overridden__) { true }
+        end
+      end
       RSpec::Core::Runner.disable_autorun!
       RSpec.reset
       reset_simplecov
