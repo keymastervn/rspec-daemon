@@ -31,6 +31,10 @@ module RSpec
         puts "quit"
         server.close
         break
+      rescue SignalException => e
+        puts "quit (#{e.signm})"
+        server.close
+        break
       rescue Exception => e
         $stderr.puts "Unexpected error in server loop: #{e.class}: #{e.message}"
         $stderr.puts e.backtrace.first(5).join("\n")
