@@ -22,6 +22,8 @@ module RSpec
       $LOAD_PATH << "./spec"
 
       RSpec::Core::Runner.disable_autorun!
+      preload
+
       server = TCPServer.open(@bind_address, @port)
       puts "Listening on tcp://#{server.addr[2]}:#{server.addr[1]}"
 
@@ -41,70 +43,63 @@ module RSpec
       end
     end
 
-    def handle_request(socket)
-      status, out = run(socket.gets)
+    private
 
-      socket.puts(status)
-      socket.puts(out)
-      puts out
-      socket.puts(__FILE__)
-    rescue SystemExit => e
-      $stderr.puts "Caught SystemExit (status: #{e.status}) — daemon continues"
-      socket.puts e.full_message rescue nil
-    rescue StandardError => e
-      socket.puts e.full_message
-    ensure
-      socket.close
-    end
-
-    def run(msg, options = [])
-      options += ["--force-color", "--format", "documentation"]
-      argv = msg.strip.split(" ")
-
-      reset
-      out = StringIO.new
-      status = RSpec::Core::Runner.run(options + argv, out, out)
-
-      [status, out.string]
-    end
-
-    def reset
+    def preload
       unless RSpec::Core::Configuration.method_defined?(:__command_overridden__)
         RSpec::Core::Configuration.class_eval do
           define_method(:command) { "rspec" }
           define_method(:__command_overridden__) { true }
         end
       end
-      RSpec::Core::Runner.disable_autorun!
-      RSpec.reset
-      reset_simplecov
 
-      if cached_config.has_recorded_config?
-        # Reload configuration from the first time
-        cached_config.replay_configuration
-        # Invoke auto reload (if Rails is in Zeitwerk mode and autoloading is enabled)
-        if defined?(::Rails) && ::Rails.respond_to?(:autoloaders) && !::Rails.configuration.cache_classes
-          puts "Reloading..."
-          if ::Rails.application.respond_to?(:reloader)
-            ::Rails.application.reloader.reload!
-          else
-            ::Rails.autoloaders.main.reload
-          end
-        end
-      else
-        # This is the first spec run
-        cached_config.record_configuration(&rspec_configuration)
-      end
+      cached_config.record_configuration(&rspec_configuration)
+      puts "Application preloaded."
     end
 
-    def reset_simplecov
-      return unless defined?(::SimpleCov)
+    def handle_request(socket)
+      msg = socket.gets
+      return if msg.nil?
 
-      SimpleCov.result if SimpleCov.running
-      SimpleCov.instance_variable_set(:@result, nil)
-      SimpleCov.pid = Process.pid
-    rescue StandardError => e
-      $stderr.puts "SimpleCov reset warning: #{e.message}"
+      pid = fork do
+        run_in_child(socket, msg)
+      end
+
+      socket.close # parent closes its copy; child owns it
+      Process.wait(pid)
+    rescue Errno::ECHILD
+      # child already reaped
+    end
+
+    def run_in_child(socket, msg)
+      reconnect_active_record
+
+      RSpec::Core::Runner.disable_autorun!
+      RSpec.reset
+      cached_config.replay_configuration
+
+      options = ["--force-color", "--format", "documentation"]
+      argv = msg.strip.split(" ")
+
+      out = StringIO.new
+      status = RSpec::Core::Runner.run(options + argv, out, out)
+
+      socket.puts(status)
+      socket.puts(out.string)
+      $stdout.puts out.string
+      socket.puts(__FILE__)
+    rescue Exception => e
+      $stderr.puts "Child error: #{e.class}: #{e.message}"
+      socket.puts(e.full_message) rescue nil
+    ensure
+      socket.close rescue nil
+      exit!(0) # skip at_exit handlers (SimpleCov, etc.)
+    end
+
+    def reconnect_active_record
+      return unless defined?(ActiveRecord::Base)
+
+      ActiveRecord::Base.clear_all_connections!
     end
 
     def rspec_configuration
