@@ -31,6 +31,9 @@ module RSpec
         puts "quit"
         server.close
         break
+      rescue Exception => e
+        $stderr.puts "Unexpected error in server loop: #{e.class}: #{e.message}"
+        $stderr.puts e.backtrace.first(5).join("\n")
       end
     end
 
@@ -41,6 +44,9 @@ module RSpec
       socket.puts(out)
       puts out
       socket.puts(__FILE__)
+    rescue SystemExit => e
+      $stderr.puts "Caught SystemExit (status: #{e.status}) — daemon continues"
+      socket.puts e.full_message rescue nil
     rescue StandardError => e
       socket.puts e.full_message
     ensure
@@ -49,7 +55,7 @@ module RSpec
 
     def run(msg, options = [])
       options += ["--force-color", "--format", "documentation"]
-      argv = msg.split(" ")
+      argv = msg.strip.split(" ")
 
       reset
       out = StringIO.new
@@ -62,6 +68,7 @@ module RSpec
       RSpec::Core::Configuration.class_eval { define_method(:command) { "rspec" } }
       RSpec::Core::Runner.disable_autorun!
       RSpec.reset
+      reset_simplecov
 
       if cached_config.has_recorded_config?
         # Reload configuration from the first time
@@ -75,6 +82,16 @@ module RSpec
         # This is the first spec run
         cached_config.record_configuration(&rspec_configuration)
       end
+    end
+
+    def reset_simplecov
+      return unless defined?(::SimpleCov)
+
+      SimpleCov.result if SimpleCov.running
+      SimpleCov.instance_variable_set(:@result, nil)
+      SimpleCov.pid = Process.pid
+    rescue StandardError => e
+      $stderr.puts "SimpleCov reset warning: #{e.message}"
     end
 
     def rspec_configuration
