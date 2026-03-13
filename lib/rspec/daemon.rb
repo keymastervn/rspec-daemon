@@ -85,7 +85,11 @@ module RSpec
         # Invoke auto reload (if Rails is in Zeitwerk mode and autoloading is enabled)
         if defined?(::Rails) && ::Rails.respond_to?(:autoloaders) && !::Rails.configuration.cache_classes
           puts "Reloading..."
-          ::Rails.autoloaders.main.reload
+          if ::Rails.application.respond_to?(:reloader)
+            ::Rails.application.reloader.reload!
+          else
+            ::Rails.autoloaders.main.reload
+          end
         end
       else
         # This is the first spec run
