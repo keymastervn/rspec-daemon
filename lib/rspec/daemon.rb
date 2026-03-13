@@ -13,9 +13,12 @@ module RSpec
 
     class Error < StandardError; end
 
+    RELOAD_POLL_INTERVAL = 3 # seconds between file change checks
+
     def initialize(bind_address, port)
       @bind_address = bind_address
       @port = port
+      @last_checked_at = Time.now
     end
 
     def start
@@ -61,6 +64,8 @@ module RSpec
       msg = socket.gets
       return if msg.nil?
 
+      reload_if_changed
+
       pid = fork do
         run_in_child(socket, msg)
       end
@@ -99,7 +104,29 @@ module RSpec
     def reconnect_active_record
       return unless defined?(ActiveRecord::Base)
 
-      ActiveRecord::Base.clear_all_connections!
+      if ActiveRecord::Base.connection_handler.respond_to?(:clear_all_connections!)
+        ActiveRecord::Base.connection_handler.clear_all_connections!
+      elsif ActiveRecord.respond_to?(:connection_handler)
+        ActiveRecord.connection_handler.clear_all_connections!
+      end
+      ActiveRecord::Base.establish_connection
+    end
+
+    def reload_if_changed
+      return unless defined?(::Rails) && ::Rails.application.respond_to?(:reloader)
+      return if Time.now - @last_checked_at < RELOAD_POLL_INTERVAL
+
+      @last_checked_at = Time.now
+
+      reloaded = false
+      ::Rails.application.reloaders.each do |reloader|
+        next unless reloader.respond_to?(:execute_if_updated)
+        reloaded = true if reloader.execute_if_updated
+      end
+
+      puts "Application reloaded." if reloaded
+    rescue StandardError => e
+      $stderr.puts "Reload warning: #{e.message}"
     end
 
     def rspec_configuration
