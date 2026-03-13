@@ -19,6 +19,7 @@ module RSpec
       @bind_address = bind_address
       @port = port
       @last_checked_at = Time.now
+      @run_count = 0
     end
 
     def start
@@ -28,25 +29,43 @@ module RSpec
       preload
 
       server = TCPServer.open(@bind_address, @port)
-      puts "Listening on tcp://#{server.addr[2]}:#{server.addr[1]}"
+      log "Listening on tcp://#{server.addr[2]}:#{server.addr[1]} (pid: #{Process.pid}, pgid: #{Process.getpgrp})"
 
       loop do
         handle_request(server.accept)
       rescue Interrupt
-        puts "quit"
+        log "quit"
         server.close
         break
       rescue SignalException => e
-        puts "quit (#{e.signm})"
+        log "quit (#{e.signm})"
         server.close
         break
       rescue Exception => e
-        $stderr.puts "Unexpected error in server loop: #{e.class}: #{e.message}"
+        log "Unexpected error in server loop: #{e.class}: #{e.message}", :error
         $stderr.puts e.backtrace.first(5).join("\n")
       end
     end
 
     private
+
+    def log(message, level = :info)
+      timestamp = Time.now.strftime("%H:%M:%S.%L")
+      prefix = "[rspec-daemon #{timestamp}]"
+      if level == :error
+        $stderr.puts "#{prefix} #{message}"
+      else
+        $stdout.puts "#{prefix} #{message}"
+      end
+    end
+
+    def child_exit_info(status)
+      if status.signaled?
+        "killed by SIG#{Signal.signame(status.termsig)}#{status.coredump? ? ' (core dumped)' : ''}"
+      else
+        "status #{status.exitstatus}"
+      end
+    end
 
     def preload
       unless RSpec::Core::Configuration.method_defined?(:__command_overridden__)
@@ -57,26 +76,36 @@ module RSpec
       end
 
       cached_config.record_configuration(&rspec_configuration)
-      puts "Application preloaded."
+      log "Application preloaded."
     end
 
     def handle_request(socket)
       msg = socket.gets
       return if msg.nil?
 
+      @run_count += 1
+      run_id = @run_count
+      log "[run:#{run_id}] Received: #{msg.strip}"
+
       reload_if_changed
 
       pid = fork do
-        run_in_child(socket, msg)
+        Process.setpgrp # isolate child from parent's process group
+        run_in_child(socket, msg, run_id)
       end
 
       socket.close # parent closes its copy; child owns it
-      Process.wait(pid)
+      log "[run:#{run_id}] Forked child pid:#{pid} (parent pgid: #{Process.getpgrp})"
+
+      _, status = Process.wait2(pid)
+      log "[run:#{run_id}] Child pid:#{pid} exited: #{child_exit_info(status)}"
     rescue Errno::ECHILD
-      # child already reaped
+      log "[run:#{run_id}] Child already reaped (ECHILD)"
     end
 
-    def run_in_child(socket, msg)
+    def run_in_child(socket, msg, run_id)
+      log "[run:#{run_id}] Child started pid:#{Process.pid} pgid:#{Process.getpgrp}"
+
       reconnect_active_record
 
       RSpec::Core::Runner.disable_autorun!
@@ -93,8 +122,9 @@ module RSpec
       socket.puts(out.string)
       $stdout.puts out.string
       socket.puts(__FILE__)
+      log "[run:#{run_id}] Child finished with rspec status:#{status}"
     rescue Exception => e
-      $stderr.puts "Child error: #{e.class}: #{e.message}"
+      log "[run:#{run_id}] Child error: #{e.class}: #{e.message}", :error
       socket.puts(e.full_message) rescue nil
     ensure
       socket.close rescue nil
@@ -124,9 +154,9 @@ module RSpec
         reloaded = true if reloader.execute_if_updated
       end
 
-      puts "Application reloaded." if reloaded
+      log "Application reloaded." if reloaded
     rescue StandardError => e
-      $stderr.puts "Reload warning: #{e.message}"
+      log "Reload warning: #{e.message}", :error
     end
 
     def rspec_configuration
