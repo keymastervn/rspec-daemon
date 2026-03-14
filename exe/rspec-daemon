@@ -1,4 +1,7 @@
 #!/usr/bin/env ruby
 
+# Enable gRPC fork support before any requires
+ENV['GRPC_ENABLE_FORK_SUPPORT'] = '1'
+
 require 'rspec/daemon/cli'
 RSpec::Daemon::Cli.start(ARGV)
