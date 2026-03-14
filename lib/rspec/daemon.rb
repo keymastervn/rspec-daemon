@@ -111,6 +111,7 @@ module RSpec
       RSpec::Core::Runner.disable_autorun!
       RSpec.reset
       cached_config.replay_configuration
+      reload_support_files
 
       options = ["--force-color", "--format", "documentation"]
       argv = msg.strip.split(" ")
@@ -157,6 +158,23 @@ module RSpec
       log "Application reloaded." if reloaded
     rescue StandardError => e
       log "Reload warning: #{e.message}", :error
+    end
+
+    def reload_support_files
+      return unless defined?(::Rails)
+
+      # After RSpec.reset, shared contexts are cleared. Re-load support files
+      # to restore them. Use load() to force re-execution even if already required.
+      support_paths = [
+        "spec/support/**/*.rb",
+        "spec/shared_contexts/**/*.rb",
+      ]
+
+      support_paths.each do |pattern|
+        Dir.glob(pattern).sort.each { |file| load(file) }
+      end
+    rescue StandardError => e
+      log "Support file reload warning: #{e.message}", :error
     end
 
     def rspec_configuration
