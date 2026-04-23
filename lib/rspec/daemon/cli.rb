@@ -6,6 +6,7 @@ module RSpec
       DEFAULT_OPTIONS = {
         bind_address: "0.0.0.0",
         port: 3002,
+        fork: false,
       }
 
       def self.start(...)
@@ -19,6 +20,9 @@ module RSpec
         end
         if ENV['RSPEC_DAEMON_PORT']
           options[:port] = ENV['RSPEC_DAEMON_PORT'].to_i
+        end
+        if ENV['RSPEC_DAEMON_FORK']
+          options[:fork] = true
         end
 
         option_parser = OptionParser.new do |opts|
@@ -34,10 +38,14 @@ module RSpec
           opts.on('-p', '--port PORT', 'port to listen on (default: 3002)') do |port|
             options[:port] = port
           end
+
+          opts.on('--fork', 'Run tests in a forked process (stronger isolation, Linux only for gRPC)') do
+            options[:fork] = true
+          end
         end
         option_parser.parse!(argv)
 
-        RSpec::Daemon.new(options[:bind_address], options[:port]).start
+        RSpec::Daemon.new(options[:bind_address], options[:port], fork: options[:fork]).start
         0
       end
     end
